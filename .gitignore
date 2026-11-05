@@ -1,0 +1,21 @@
+
+# Variables privadas y credenciales
+.env
+.env.*
+!.env.example
+
+# Entorno virtual de Python
+.venv/
+venv/
+env/
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Archivos locales de base de datos
+*.db
+*.sqlite3
+
+# Archivos del editor
+.vscode/
