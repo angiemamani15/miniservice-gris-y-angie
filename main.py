@@ -1,751 +1,290 @@
+"""
+Mini Service Gris y Angie - Sistema de gestión comercial.
+
+Punto de entrada del programa:  python main.py
+
+Arma la ventana principal con el menú lateral fijo, muestra el login
+y, según el rol del usuario, habilita las secciones permitidas. Cada
+sección es una clase en su propio archivo (ventas.py, productos.py...)
+que se carga recién cuando el usuario la abre.
+"""
+
+import importlib
+import sys
+import traceback
 
 import customtkinter as ctk
-from tkinter import messagebox
-from datetime import date
 
-from database import conectar, crear_base_datos
+try:
+    import supabase_config  # noqa: F401  (valida el archivo .env al iniciar)
+except ValueError as error_configuracion:
+    import tkinter
+    from tkinter import messagebox
+
+    raiz = tkinter.Tk()
+    raiz.withdraw()
+    messagebox.showerror(
+        "Falta la configuración",
+        f"{error_configuracion}.\n\nCopiá el archivo .env.example como .env y completá "
+        "SUPABASE_URL y SUPABASE_KEY (clave pública anon).",
+    )
+    sys.exit(1)
+
+import sesion
+from componentes import FUENTE_ICONOS, advertir, aplicar_tema, confirmar, configurar_estilos
+from config import (
+    BLANCO, FONDO, FUENTE, GRIS, NOMBRE_NEGOCIO, ROJO, SECCIONES, VERDE,
+    VERDE_MENU, VERDE_OSCURO, VERSION,
+)
 from login import LoginFrame
-from supabase_config import supabase
-
-# ==========================================
-# CONFIGURACIÓN GENERAL
-# ==========================================
+from servicios import autenticacion
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("green")
+aplicar_tema()
 
-BLANCO = "#FFFFFF"
-FONDO = "#F4F8F5"
-VERDE_OSCURO = "#18392B"
-VERDE_PRINCIPAL = "#166534"
-VERDE_HOVER = "#15803D"
-VERDE_CLARO = "#DCEFE2"
-VERDE_SUAVE = "#EAF5ED"
-TEXTO = "#18392B"
-GRIS = "#64756B"
-BORDE = "#DFEAE2"
-ROJO = "#B91C1C"
-
-crear_base_datos()
-
-ROL_ACTUAL = None
-pantalla_login = None
-seccion_actual = "Inicio"
-menu_compacto = False
-ajuste_pendiente = None
-
-PERMISOS = {
-    "administradora": {
-        "Inicio", "Productos", "Inventario",
-        "Ventas", "Proveedores", "Caja", "Reportes"
-    },
-    "cajera": {
-        "Inicio", "Ventas", "Caja"
-    }
+# Sección -> (archivo, clase)
+MODULOS = {
+    "Inicio": ("inicio", "InicioFrame"),
+    "Ventas": ("ventas", "VentasFrame"),
+    "Caja": ("caja", "CajaFrame"),
+    "Productos": ("productos", "ProductosFrame"),
+    "Categorías": ("categorias", "CategoriasFrame"),
+    "Inventario": ("inventario", "InventarioFrame"),
+    "Proveedores": ("proveedores", "ProveedoresFrame"),
+    "Reportes": ("reportes", "ReportesFrame"),
+    "Configuración": ("configuracion", "ConfiguracionFrame"),
 }
 
-SECCIONES = [
-    ("Inicio", "⌂"),
-    ("Productos", "▣"),
-    ("Inventario", "▤"),
-    ("Ventas", "◉"),
-    ("Proveedores", "♧"),
-    ("Caja", "$"),
-    ("Reportes", "▥")
-]
-
-# ==========================================
-# VENTANA PRINCIPAL
-# ==========================================
-
-ventana = ctk.CTk()
-ventana.title("MiniService Gris y Angie | Sistema de Gestión")
-ventana.geometry("1200x720")
-ventana.minsize(600, 450)
-ventana.configure(fg_color=FONDO)
-
-# ==========================================
-# MENÚ LATERAL
-# ==========================================
-
-menu = ctk.CTkFrame(
-    ventana,
-    width=230,
-    corner_radius=0,
-    fg_color=VERDE_OSCURO
-)
-menu.pack_propagate(False)
-
-logo = ctk.CTkFrame(
-    menu,
-    width=65,
-    height=65,
-    corner_radius=15,
-    fg_color="#285943"
-)
-logo.pack(pady=(20, 10))
-logo.pack_propagate(False)
-
-ctk.CTkLabel(
-    logo,
-    text="G&A",
-    font=("Arial", 21, "bold"),
-    text_color=BLANCO
-).place(relx=0.5, rely=0.5, anchor="center")
-
-titulo_menu = ctk.CTkLabel(
-    menu,
-    text="MiniService\nGris y Angie",
-    font=("Arial", 19, "bold"),
-    text_color=BLANCO,
-    justify="center"
-)
-titulo_menu.pack(pady=(5, 15))
-
-subtitulo_menu = ctk.CTkLabel(
-    menu,
-    text="MENÚ PRINCIPAL",
-    font=("Arial", 11, "bold"),
-    text_color="#B8CFC0"
-)
-subtitulo_menu.pack(anchor="w", padx=23, pady=(0, 10))
-
-contenedor_botones = ctk.CTkScrollableFrame(
-    menu,
-    fg_color="transparent"
-)
-contenedor_botones.pack(
-    fill="both",
-    expand=True,
-    padx=10
-)
-
-contenido = ctk.CTkFrame(
-    ventana,
-    fg_color=FONDO,
-    corner_radius=0
-)
-
-botones_menu = {}
-
-# ==========================================
-# FUNCIONES GENERALES
-# ==========================================
-
-def formato_dinero(valor):
-    return (
-        f"$ {valor:,.2f}"
-        .replace(",", "X")
-        .replace(".", ",")
-        .replace("X", ".")
-    )
+ANCHO_MENU = 230
+ANCHO_MENU_COMPACTO = 76
 
 
-def obtener_estadisticas():
-    conexion = conectar()
+class Aplicacion(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title(f"{NOMBRE_NEGOCIO} | Sistema de Gestión")
+        self.configure(fg_color=FONDO)
+        self.minsize(820, 600)
+        self._centrar()
+        configurar_estilos()
 
-    try:
-        cursor = conexion.cursor()
+        self.pantalla_login = None
+        self.seccion_actual = None
+        self.menu_compacto = None
+        self.ajuste_pendiente = None
+        self.botones_menu = {}
 
-        cursor.execute("SELECT COUNT(*) FROM productos")
-        productos = cursor.fetchone()[0]
+        self._crear_menu()
+        self.contenido = ctk.CTkFrame(self, fg_color=FONDO, corner_radius=0)
 
-        cursor.execute("""
-            SELECT COUNT(*)
-            FROM productos
-            WHERE stock <= stock_minimo
-        """)
-        stock_bajo = cursor.fetchone()[0]
+        self.bind("<Configure>", self._programar_adaptacion)
+        self.protocol("WM_DELETE_WINDOW", self.salir)
+        self.mostrar_login()
 
-        cursor.execute("""
-            SELECT
-                COUNT(*),
-                COALESCE(SUM(total), 0)
-            FROM ventas
-            WHERE DATE(fecha, 'localtime') = ?
-        """, (date.today().isoformat(),))
+    def _ancho_logico(self):
+        # Con el escalado de Windows (125 %, 150 %) winfo_width() devuelve
+        # píxeles reales; CustomTkinter trabaja en unidades sin escalar.
+        return self._reverse_window_scaling(self.winfo_width())
 
-        ventas, ingresos = cursor.fetchone()
+    def _centrar(self):
+        escala = self._get_window_scaling()
+        pantalla_ancho, pantalla_alto = self.winfo_screenwidth(), self.winfo_screenheight()
+        ancho = min(1366, int(pantalla_ancho / escala) - 40)
+        alto = min(800, int(pantalla_alto / escala) - 90)
+        x = max((pantalla_ancho - int(ancho * escala)) // 2, 0)
+        y = max((pantalla_alto - int(alto * escala)) // 2 - 20, 0)
+        self.geometry(f"{ancho}x{alto}+{x}+{y}")
 
-        return productos, stock_bajo, ventas, ingresos
+    # ------------------------------------------------------------------
+    # MENÚ LATERAL
+    # ------------------------------------------------------------------
 
-    finally:
-        conexion.close()
+    def _crear_menu(self):
+        self.menu = ctk.CTkFrame(self, width=ANCHO_MENU, corner_radius=0, fg_color=VERDE_OSCURO)
+        self.menu.pack_propagate(False)
 
+        self.cabecera_menu = ctk.CTkFrame(self.menu, fg_color="transparent")
+        self.cabecera_menu.pack(fill="x", padx=14, pady=(18, 10))
 
-# ==========================================
-# TARJETAS
-# ==========================================
+        self.logo = ctk.CTkFrame(self.cabecera_menu, width=50, height=50, corner_radius=14, fg_color=VERDE_MENU)
+        self.logo.pack(side="left")
+        self.logo.pack_propagate(False)
+        ctk.CTkLabel(self.logo, text="G&A", font=(FUENTE, 17, "bold"), text_color=BLANCO).place(
+            relx=0.5, rely=0.5, anchor="center")
 
-def crear_tarjeta(padre, titulo, valor, simbolo):
-    tarjeta = ctk.CTkFrame(
-        padre,
-        fg_color=BLANCO,
-        corner_radius=15,
-        border_width=1,
-        border_color=BORDE
-    )
+        self.titulo_menu = ctk.CTkLabel(
+            self.cabecera_menu, text="Mini Service\nGris y Angie", font=(FUENTE, 16, "bold"),
+            text_color=BLANCO, justify="left")
+        self.titulo_menu.pack(side="left", padx=(10, 0))
 
-    encabezado = ctk.CTkFrame(
-        tarjeta,
-        fg_color="transparent"
-    )
-    encabezado.pack(
-        fill="x",
-        padx=15,
-        pady=(15, 5)
-    )
+        self.subtitulo_menu = ctk.CTkLabel(
+            self.menu, text="MENÚ PRINCIPAL", font=(FUENTE, 11, "bold"), text_color="#B8CFC0")
+        self.subtitulo_menu.pack(anchor="w", padx=23, pady=(6, 4))
 
-    ctk.CTkLabel(
-        encabezado,
-        text=titulo,
-        font=("Arial", 12),
-        text_color=GRIS,
-        wraplength=170
-    ).pack(side="left", anchor="w")
+        self.contenedor_botones = ctk.CTkFrame(self.menu, fg_color="transparent")
+        self.contenedor_botones.pack(fill="both", expand=True, padx=10)
 
-    ctk.CTkLabel(
-        encabezado,
-        text=simbolo,
-        font=("Arial", 19, "bold"),
-        text_color=VERDE_PRINCIPAL
-    ).pack(side="right")
+        for nombre, icono in SECCIONES:
+            self.botones_menu[nombre] = ctk.CTkButton(
+                self.contenedor_botones, text=f"  {icono}    {nombre}", height=38, corner_radius=10,
+                fg_color="transparent", hover_color=VERDE_MENU, text_color=BLANCO, anchor="w",
+                font=(FUENTE, 13), command=lambda s=nombre: self.mostrar_seccion(s),
+            )
 
-    ctk.CTkLabel(
-        tarjeta,
-        text=str(valor),
-        font=("Arial", 24, "bold"),
-        text_color=TEXTO
-    ).pack(
-        anchor="w",
-        padx=15,
-        pady=(0, 15)
-    )
+        self.pie_menu = ctk.CTkFrame(self.menu, fg_color="transparent")
+        self.pie_menu.pack(fill="x", padx=10, pady=(5, 12))
 
-    return tarjeta
+        self.etiqueta_usuario = ctk.CTkLabel(
+            self.pie_menu, text="", font=(FUENTE, 12, "bold"), text_color=BLANCO)
+        self.etiqueta_usuario.pack()
+        self.etiqueta_rol = ctk.CTkLabel(
+            self.pie_menu, text="", font=(FUENTE, 11), text_color="#B8CFC0")
+        self.etiqueta_rol.pack(pady=(0, 8))
 
+        self.boton_cerrar = ctk.CTkButton(
+            self.pie_menu, text="Cerrar sesión", height=36, fg_color=VERDE_MENU,
+            hover_color="#366D50", text_color=BLANCO, command=self.cerrar_sesion)
+        self.boton_cerrar.pack(fill="x")
 
-# ==========================================
-# INICIO RESPONSIVE
-# ==========================================
+        self.etiqueta_version = ctk.CTkLabel(
+            self.pie_menu, text=f"Gris y Angie | Versión {VERSION}", font=(FUENTE, 10),
+            text_color="#B8CFC0")
+        self.etiqueta_version.pack(pady=(8, 0))
 
-def mostrar_inicio():
-    panel = ctk.CTkScrollableFrame(
-        contenido,
-        fg_color="transparent"
-    )
-    panel.pack(
-        fill="both",
-        expand=True,
-        padx=15,
-        pady=12
-    )
+    def _programar_adaptacion(self, _evento=None):
+        if self.ajuste_pendiente is not None:
+            self.after_cancel(self.ajuste_pendiente)
+        self.ajuste_pendiente = self.after(120, self._adaptar_menu)
 
-    ctk.CTkLabel(
-        panel,
-        text=(
-            "Panel de administración"
-            if ROL_ACTUAL == "administradora"
-            else "Panel de caja"
-        ),
-        font=("Arial", 26, "bold"),
-        text_color=TEXTO
-    ).pack(anchor="w", pady=(5, 5))
-
-    ctk.CTkLabel(
-        panel,
-        text="Bienvenida a MiniService Gris y Angie",
-        font=("Arial", 13),
-        text_color=GRIS
-    ).pack(anchor="w", pady=(0, 8))
-
-    ctk.CTkLabel(
-        panel,
-        text=f"Sesión iniciada como: {ROL_ACTUAL.capitalize()}",
-        font=("Arial", 12, "bold"),
-        text_color=VERDE_PRINCIPAL
-    ).pack(anchor="w", pady=(0, 15))
-
-    try:
-        productos, stock_bajo, ventas, ingresos = (
-            obtener_estadisticas()
-        )
-    except Exception as error:
-        print("Error al cargar estadísticas:", error)
-        productos = 0
-        stock_bajo = 0
-        ventas = 0
-        ingresos = 0
-
-    estadisticas = ctk.CTkFrame(
-        panel,
-        fg_color="transparent"
-    )
-    estadisticas.pack(fill="x", pady=5)
-
-    datos = [
-        ("Productos registrados", productos, "▣"),
-        ("Ventas de hoy", ventas, "◉"),
-        ("Ingresos del día", formato_dinero(ingresos), "$"),
-        ("Productos con stock bajo", stock_bajo, "!")
-    ]
-
-    tarjetas = []
-
-    for titulo, valor, simbolo in datos:
-        tarjeta = crear_tarjeta(
-            estadisticas, titulo, valor, simbolo
-        )
-        tarjetas.append(tarjeta)
-
-    accesos = ctk.CTkFrame(
-        panel,
-        fg_color=BLANCO,
-        corner_radius=15,
-        border_width=1,
-        border_color=BORDE
-    )
-    accesos.pack(fill="x", pady=(20, 10))
-
-    ctk.CTkLabel(
-        accesos,
-        text="Accesos rápidos",
-        font=("Arial", 19, "bold"),
-        text_color=TEXTO
-    ).pack(anchor="w", padx=15, pady=(15, 10))
-
-    accesos_botones = ctk.CTkFrame(
-        accesos,
-        fg_color="transparent"
-    )
-    accesos_botones.pack(
-        fill="x",
-        padx=15,
-        pady=(0, 15)
-    )
-
-    if ROL_ACTUAL == "administradora":
-        opciones = [
-            ("Nueva venta", "Ventas"),
-            ("Productos", "Productos"),
-            ("Inventario", "Inventario")
-        ]
-    else:
-        opciones = [
-            ("Nueva venta", "Ventas"),
-            ("Caja", "Caja")
-        ]
-
-    botones_acceso = []
-
-    for texto, seccion in opciones:
-        boton = ctk.CTkButton(
-            accesos_botones,
-            text=texto,
-            height=42,
-            fg_color=VERDE_CLARO,
-            hover_color="#C8E8D1",
-            text_color=VERDE_OSCURO,
-            font=("Arial", 12, "bold"),
-            command=lambda s=seccion: mostrar_seccion(s)
-        )
-        botones_acceso.append(boton)
-
-    informacion = ctk.CTkFrame(
-        panel,
-        fg_color=VERDE_SUAVE,
-        corner_radius=12
-    )
-    informacion.pack(fill="x", pady=(10, 10))
-
-    ctk.CTkLabel(
-        informacion,
-        text="MiniService Gris y Angie",
-        font=("Arial", 15, "bold"),
-        text_color=VERDE_OSCURO
-    ).pack(anchor="w", padx=15, pady=(12, 5))
-
-    ctk.CTkLabel(
-        informacion,
-        text=(
-            "Administrá las operaciones del negocio "
-            "de forma sencilla y organizada."
-        ),
-        font=("Arial", 12),
-        text_color=GRIS,
-        wraplength=320,
-        justify="left"
-    ).pack(anchor="w", padx=15, pady=(0, 12))
-
-    def reorganizar_inicio(evento=None):
-        if not estadisticas.winfo_exists():
+    def _adaptar_menu(self, forzar=False):
+        """En ventanas angostas el menú muestra sólo íconos."""
+        self.ajuste_pendiente = None
+        usuario = sesion.actual()
+        if usuario is None:
             return
 
-        ancho = estadisticas.winfo_width()
-        columnas = 2 if ancho >= 440 else 1
+        compacto = self._ancho_logico() < 1000
+        if compacto == self.menu_compacto and not forzar:
+            return
+        self.menu_compacto = compacto
 
-        for tarjeta in tarjetas:
-            tarjeta.grid_forget()
-
-        for columna in range(2):
-            estadisticas.grid_columnconfigure(
-                columna,
-                weight=1 if columna < columnas else 0
-            )
-
-        for indice, tarjeta in enumerate(tarjetas):
-            tarjeta.grid(
-                row=indice // columnas,
-                column=indice % columnas,
-                sticky="ew",
-                padx=5,
-                pady=5
-            )
-
-        ancho_accesos = accesos_botones.winfo_width()
-        columnas_acceso = (
-            len(botones_acceso)
-            if ancho_accesos >= 440
-            else 1
-        )
-
-        for boton in botones_acceso:
-            boton.grid_forget()
-
-        for columna in range(len(botones_acceso)):
-            accesos_botones.grid_columnconfigure(
-                columna,
-                weight=1 if columna < columnas_acceso else 0
-            )
-
-        for indice, boton in enumerate(botones_acceso):
-            boton.grid(
-                row=indice // columnas_acceso,
-                column=indice % columnas_acceso,
-                sticky="ew",
-                padx=4,
-                pady=4
-            )
-
-    estadisticas.bind("<Configure>", reorganizar_inicio)
-    accesos_botones.bind("<Configure>", reorganizar_inicio)
-    panel.after(100, reorganizar_inicio)
-
-
-# ==========================================
-# MENSAJES Y SECCIONES
-# ==========================================
-
-def mostrar_error(nombre, error):
-    ctk.CTkLabel(
-        contenido,
-        text=f"No se pudo abrir {nombre}",
-        font=("Arial", 23, "bold"),
-        text_color=ROJO
-    ).pack(pady=(50, 15))
-
-    ctk.CTkLabel(
-        contenido,
-        text=str(error),
-        font=("Arial", 13),
-        text_color=GRIS,
-        wraplength=350
-    ).pack()
-
-
-def mostrar_pendiente(nombre):
-    ctk.CTkLabel(
-        contenido,
-        text=nombre,
-        font=("Arial", 26, "bold"),
-        text_color=TEXTO
-    ).pack(pady=(50, 15))
-
-    ctk.CTkLabel(
-        contenido,
-        text="Esta sección se encuentra en desarrollo.",
-        font=("Arial", 13),
-        text_color=GRIS
-    ).pack()
-
-
-# ==========================================
-# NAVEGACIÓN
-# ==========================================
-
-def mostrar_seccion(nombre):
-    global seccion_actual
-
-    if ROL_ACTUAL is None:
-        return
-
-    if nombre not in PERMISOS.get(ROL_ACTUAL, set()):
-        messagebox.showwarning(
-            "Acceso restringido",
-            "No tenés permiso para acceder a esta sección."
-        )
-        return
-
-    seccion_actual = nombre
-
-    for widget in contenido.winfo_children():
-        widget.destroy()
-
-    for seccion, boton in botones_menu.items():
-        boton.configure(
-            fg_color=(
-                VERDE_PRINCIPAL
-                if seccion == nombre
-                else "transparent"
-            ),
-            text_color=BLANCO
-        )
-
-    if nombre == "Inicio":
-        mostrar_inicio()
-        return
-
-    try:
-        if nombre == "Productos":
-            from productos import ProductosFrame
-            modulo = ProductosFrame(contenido)
-
-        elif nombre == "Inventario":
-            from inventario import InventarioFrame
-            modulo = InventarioFrame(contenido)
-
-        elif nombre == "Ventas":
-            from ventas import VentasFrame
-            modulo = VentasFrame(contenido)
-
+        self.menu.configure(width=ANCHO_MENU_COMPACTO if compacto else ANCHO_MENU)
+        if compacto:
+            self.titulo_menu.pack_forget()
+            self.subtitulo_menu.pack_forget()
+            self.etiqueta_version.pack_forget()
+            self.etiqueta_rol.pack_forget()
+            self.etiqueta_usuario.configure(text="Admin" if usuario.es_admin else "Caja",
+                                            font=(FUENTE, 10, "bold"))
+            self.boton_cerrar.configure(text="Salir")
         else:
-            mostrar_pendiente(nombre)
+            self.titulo_menu.pack(side="left", padx=(10, 0))
+            self.subtitulo_menu.pack(after=self.cabecera_menu, anchor="w", padx=23, pady=(6, 4))
+            self.etiqueta_usuario.configure(text=usuario.nombre, font=(FUENTE, 12, "bold"))
+            self.etiqueta_rol.pack(after=self.etiqueta_usuario, pady=(0, 8))
+            self.etiqueta_rol.configure(text=f"Rol: {usuario.rol_legible}")
+            self.etiqueta_version.pack(pady=(8, 0))
+            self.boton_cerrar.configure(text="Cerrar sesión")
+
+        for nombre, icono in SECCIONES:
+            self.botones_menu[nombre].configure(
+                text=icono if compacto else f"  {icono}    {nombre}",
+                anchor="center" if compacto else "w",
+                font=(FUENTE_ICONOS, 18) if compacto else (FUENTE, 13),
+            )
+
+    # ------------------------------------------------------------------
+    # NAVEGACIÓN
+    # ------------------------------------------------------------------
+
+    def mostrar_seccion(self, nombre):
+        usuario = sesion.actual()
+        if usuario is None:
+            return
+        if not usuario.puede(nombre):
+            advertir(f"Tu rol ({usuario.rol_legible}) no tiene acceso a {nombre}.", "Acceso restringido")
             return
 
-        modulo.pack(fill="both", expand=True)
+        self.seccion_actual = nombre
+        for widget in self.contenido.winfo_children():
+            widget.destroy()
 
-    except Exception as error:
-        mostrar_error(nombre, error)
+        for seccion, boton in self.botones_menu.items():
+            boton.configure(fg_color=VERDE if seccion == nombre else "transparent")
 
+        archivo, clase = MODULOS[nombre]
+        try:
+            modulo = importlib.import_module(archivo)
+            pantalla = getattr(modulo, clase)(self.contenido, self)
+            pantalla.pack(fill="both", expand=True)
+        except Exception as error:
+            # Un error en una sección no cierra el programa.
+            traceback.print_exc()
+            for widget in self.contenido.winfo_children():
+                widget.destroy()
+            self._mostrar_error_seccion(nombre, error)
 
-# ==========================================
-# BOTONES DEL MENÚ
-# ==========================================
+    def _mostrar_error_seccion(self, nombre, error):
+        ctk.CTkLabel(self.contenido, text=f"No se pudo abrir {nombre}", font=(FUENTE, 23, "bold"),
+                     text_color=ROJO).pack(pady=(60, 15))
+        ctk.CTkLabel(self.contenido, text=str(error), font=(FUENTE, 13), text_color=GRIS,
+                     wraplength=520).pack()
+        ctk.CTkButton(self.contenido, text="Reintentar", fg_color=VERDE,
+                      command=lambda: self.mostrar_seccion(nombre)).pack(pady=20)
 
-for nombre, icono in SECCIONES:
-    boton = ctk.CTkButton(
-        contenedor_botones,
-        text=f"  {icono}    {nombre}",
-        height=44,
-        corner_radius=10,
-        fg_color="transparent",
-        hover_color="#285943",
-        text_color=BLANCO,
-        anchor="w",
-        font=("Arial", 13),
-        command=lambda s=nombre: mostrar_seccion(s)
-    )
-    botones_menu[nombre] = boton
+    def refrescar(self):
+        """Vuelve a abrir la sección actual (por ejemplo, tras una operación)."""
+        if self.seccion_actual:
+            self.mostrar_seccion(self.seccion_actual)
 
+    # ------------------------------------------------------------------
+    # SESIÓN
+    # ------------------------------------------------------------------
 
-# ==========================================
-# PIE DEL MENÚ
-# ==========================================
+    def mostrar_login(self):
+        self.pantalla_login = LoginFrame(self, on_login=self.abrir_sistema)
+        self.pantalla_login.pack(fill="both", expand=True)
 
-pie_menu = ctk.CTkFrame(
-    menu,
-    fg_color="transparent"
-)
-pie_menu.pack(fill="x", padx=10, pady=(5, 10))
+    def abrir_sistema(self, usuario):
+        if self.pantalla_login is not None:
+            self.pantalla_login.destroy()
+            self.pantalla_login = None
 
-etiqueta_rol = ctk.CTkLabel(
-    pie_menu,
-    text="",
-    font=("Arial", 12, "bold"),
-    text_color="#B8CFC0"
-)
-etiqueta_rol.pack(pady=(0, 8))
+        self.menu.pack(side="left", fill="y")
+        self.contenido.pack(side="left", fill="both", expand=True)
 
-boton_cerrar = ctk.CTkButton(
-    pie_menu,
-    text="Cerrar sesión",
-    height=38,
-    fg_color="#285943",
-    hover_color="#366D50",
-    text_color=BLANCO,
-    command=lambda: cerrar_sesion()
-)
-boton_cerrar.pack(fill="x")
+        for nombre, boton in self.botones_menu.items():
+            boton.pack_forget()
+            if usuario.puede(nombre):
+                boton.pack(fill="x", pady=2, padx=3)
 
-etiqueta_version = ctk.CTkLabel(
-    pie_menu,
-    text="Gris y Angie | Versión 1.0",
-    font=("Arial", 10),
-    text_color="#B8CFC0"
-)
-etiqueta_version.pack(pady=(10, 0))
+        self.menu_compacto = None
+        self._adaptar_menu(forzar=True)
+        self.mostrar_seccion("Inicio")
 
+    def cerrar_sesion(self, preguntar=True):
+        if preguntar and not confirmar("¿Querés cerrar la sesión actual?", "Cerrar sesión"):
+            return
+        autenticacion.cerrar_sesion()
+        self.seccion_actual = None
+        for widget in self.contenido.winfo_children():
+            widget.destroy()
+        self.menu.pack_forget()
+        self.contenido.pack_forget()
+        self.mostrar_login()
 
-# ==========================================
-# ADAPTACIÓN DEL MENÚ
-# ==========================================
-
-def adaptar_menu(evento=None):
-    global menu_compacto, ajuste_pendiente
-
-    if ROL_ACTUAL is None:
-        return
-
-    ancho = ventana.winfo_width()
-    compacto = ancho < 950
-
-    if compacto == menu_compacto:
-        return
-
-    menu_compacto = compacto
-
-    menu.configure(width=75 if compacto else 230)
-
-    if compacto:
-        titulo_menu.pack_forget()
-        subtitulo_menu.pack_forget()
-        etiqueta_version.pack_forget()
-
-        logo.configure(width=48, height=48)
-        etiqueta_rol.configure(
-            text="Admin" if ROL_ACTUAL == "administradora" else "Caja",
-            font=("Arial", 10, "bold")
-        )
-        boton_cerrar.configure(text="Salir", width=55)
-
-    else:
-        titulo_menu.pack(
-            after=logo,
-            pady=(5, 15)
-        )
-        subtitulo_menu.pack(
-            after=titulo_menu,
-            anchor="w",
-            padx=23,
-            pady=(0, 10)
-        )
-        etiqueta_version.pack(pady=(10, 0))
-
-        logo.configure(width=65, height=65)
-        etiqueta_rol.configure(
-            text=f"Rol: {ROL_ACTUAL.capitalize()}",
-            font=("Arial", 12, "bold")
-        )
-        boton_cerrar.configure(text="Cerrar sesión")
-
-    for nombre, icono in SECCIONES:
-        boton = botones_menu[nombre]
-        boton.configure(
-            text=icono if compacto else f"  {icono}    {nombre}",
-            anchor="center" if compacto else "w",
-            font=("Arial", 17 if compacto else 13)
-        )
+    def salir(self):
+        # Al cerrar la ventana también se cierra la sesión en Supabase
+        # (y se detiene la renovación automática del token).
+        autenticacion.cerrar_sesion()
+        self.destroy()
 
 
-def programar_adaptacion(evento=None):
-    global ajuste_pendiente
-
-    if ajuste_pendiente is not None:
-        ventana.after_cancel(ajuste_pendiente)
-
-    ajuste_pendiente = ventana.after(120, adaptar_menu)
+def main():
+    app = Aplicacion()
+    app.mainloop()
 
 
-ventana.bind("<Configure>", programar_adaptacion)
-
-
-# ==========================================
-# INICIAR SESIÓN
-# ==========================================
-
-def mostrar_login():
-    global pantalla_login
-
-    pantalla_login = LoginFrame(
-        ventana,
-        on_login=abrir_sistema
-    )
-    pantalla_login.pack(fill="both", expand=True)
-
-
-def abrir_sistema(rol):
-    global ROL_ACTUAL, pantalla_login
-
-    if rol not in PERMISOS:
-        messagebox.showerror(
-            "Acceso denegado",
-            "El usuario no tiene un rol autorizado."
-        )
-        return
-
-    ROL_ACTUAL = rol
-
-    if pantalla_login is not None:
-        pantalla_login.destroy()
-        pantalla_login = None
-
-    menu.pack(side="left", fill="y")
-    contenido.pack(side="left", fill="both", expand=True)
-
-    etiqueta_rol.configure(
-        text=f"Rol: {rol.capitalize()}"
-    )
-
-    for nombre, boton in botones_menu.items():
-        boton.pack_forget()
-
-        if nombre in PERMISOS[rol]:
-            boton.pack(fill="x", pady=4, padx=3)
-
-    adaptar_menu()
-    mostrar_seccion("Inicio")
-
-
-# ==========================================
-# CERRAR SESIÓN
-# ==========================================
-
-def cerrar_sesion():
-    global ROL_ACTUAL, menu_compacto
-
-    confirmar = messagebox.askyesno(
-        "Cerrar sesión",
-        "¿Querés cerrar la sesión actual?"
-    )
-
-    if not confirmar:
-        return
-
-    try:
-        supabase.auth.sign_out()
-
-    except Exception as error:
-        messagebox.showerror(
-            "Error",
-            f"No se pudo cerrar la sesión:\n{error}"
-        )
-        return
-
-    ROL_ACTUAL = None
-    menu_compacto = False
-
-    for widget in contenido.winfo_children():
-        widget.destroy()
-
-    menu.pack_forget()
-    contenido.pack_forget()
-
-    mostrar_login()
-
-
-# ==========================================
-# INICIAR APLICACIÓN
-# ==========================================
-
-mostrar_login()
-ventana.mainloop()
+if __name__ == "__main__":
+    main()

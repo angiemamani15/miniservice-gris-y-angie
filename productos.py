@@ -1,734 +1,381 @@
+"""
+Gestión de productos (CRUD) - sólo administradora.
+
+ * Registrar: código/código de barras, nombre, categoría, precios y stock.
+ * Listar, buscar por nombre o código y filtrar por categoría / estado.
+ * Editar (doble clic o botón).
+ * Eliminar con confirmación: si el producto tiene ventas, compras o
+   movimientos, no se elimina (se perdería el historial) y se ofrece
+   desactivarlo, para que deje de aparecer en Ventas.
+
+El stock se carga sólo al registrar el producto (queda como "Stock
+inicial" en el historial). Después se modifica desde Inventario.
+"""
 
 import customtkinter as ctk
-from tkinter import ttk, messagebox
-from supabase_config import supabase
 
-# COLORES
-VERDE_OSCURO = "#18392B"
-VERDE = "#166534"
-FONDO = "#F4F8F5"
-BLANCO = "#FFFFFF"
-GRIS = "#64756B"
-ROJO = "#B91C1C"
+from componentes import (
+    Tabla, advertir, boton, campo, cambiar_opciones, confirmar, ejecutar_seguro, elegir_opcion,
+    encabezado, escribir, formato_dinero, informar, numero_editable, panel, selector,
+)
+from config import BLANCO, FONDO, FUENTE, GRIS, ROJO, VERDE, VERDE_OSCURO, VERDE_SUAVE
+from database import ErrorSistema
+from servicios import catalogo, validaciones
+
+TODAS = "Todas las categorías"
+ESTADOS = ["Activos", "Inactivos", "Todos"]
 
 
 class ProductosFrame(ctk.CTkFrame):
-    def __init__(self, master):
+    def __init__(self, master, app=None):
         super().__init__(master, fg_color=FONDO)
+        self.app = app
 
         self.producto_id = None
-        self.categorias = {}
+        self.categorias = {}   # nombre -> id
         self.productos = []
 
-        # ENCABEZADO
-        encabezado = ctk.CTkFrame(self, fg_color="transparent")
-        encabezado.pack(fill="x", padx=22, pady=(16, 8))
+        encabezado(self, "Gestión de productos", "Registrá, buscá y administrá la mercadería.").pack(
+            fill="x", padx=22, pady=(16, 6))
 
-        ctk.CTkLabel(
-            encabezado,
-            text="Gestión de productos",
-            font=("Arial", 25, "bold"),
-            text_color=VERDE_OSCURO
-        ).pack(anchor="w")
-
-        ctk.CTkLabel(
-            encabezado,
-            text="Registrá, buscá y administrá la mercadería.",
-            font=("Arial", 12),
-            text_color=GRIS
-        ).pack(anchor="w", pady=(3, 0))
-
-        # PESTAÑAS
         self.pestanas = ctk.CTkTabview(
-            self,
-            fg_color=BLANCO,
-            segmented_button_selected_color=VERDE,
-            segmented_button_selected_hover_color=VERDE_OSCURO
-        )
-        self.pestanas.pack(
-            fill="both",
-            expand=True,
-            padx=22,
-            pady=(0, 16)
-        )
-
-        self.pestanas.add("Registrar producto")
+            self, fg_color=FONDO, segmented_button_selected_color=VERDE,
+            segmented_button_selected_hover_color=VERDE_OSCURO, segmented_button_font=(FUENTE, 13, "bold"))
+        self.pestanas.pack(fill="both", expand=True, padx=16, pady=(0, 12))
         self.pestanas.add("Lista de productos")
+        self.pestanas.add("Registrar producto")
 
-        self.crear_formulario()
         self.crear_listado()
+        self.crear_formulario()
 
         self.cargar_categorias()
         self.cargar_productos()
 
-    # ----------------------------------------
-    # CREAR CAMPO
-    # ----------------------------------------
-
-    def crear_campo(self, padre, texto, fila, columna):
-        contenedor = ctk.CTkFrame(
-            padre,
-            fg_color="transparent"
-        )
-        contenedor.grid(
-            row=fila,
-            column=columna,
-            sticky="ew",
-            padx=8,
-            pady=7
-        )
-
-        ctk.CTkLabel(
-            contenedor,
-            text=texto,
-            text_color=VERDE_OSCURO,
-            font=("Arial", 12, "bold")
-        ).pack(anchor="w", pady=(0, 4))
-
-        entrada = ctk.CTkEntry(
-            contenedor,
-            height=37,
-            border_color="#D7E3DA"
-        )
-        entrada.pack(fill="x")
-
-        return entrada
-
-    # ----------------------------------------
+    # ==================================================================
     # FORMULARIO
-    # ----------------------------------------
+    # ==================================================================
 
     def crear_formulario(self):
         tab = self.pestanas.tab("Registrar producto")
+        tab.grid_columnconfigure(0, weight=3)
+        tab.grid_columnconfigure(1, weight=1, minsize=260)
+        tab.grid_rowconfigure(0, weight=1)
 
-        contenido = ctk.CTkFrame(
-            tab,
-            fg_color="transparent"
-        )
-        contenido.pack(
-            fill="both",
-            expand=True,
-            padx=12,
-            pady=8
-        )
+        contenido = panel(tab)
+        contenido.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        self.titulo_formulario = ctk.CTkLabel(
-            contenido,
-            text="Registrar nuevo producto",
-            font=("Arial", 18, "bold"),
-            text_color=VERDE_OSCURO
-        )
-        self.titulo_formulario.pack(
-            anchor="w",
-            padx=8,
-            pady=(4, 12)
-        )
+        self.titulo_formulario = ctk.CTkLabel(contenido, text="Registrar nuevo producto",
+                                              font=(FUENTE, 18, "bold"), text_color=VERDE_OSCURO)
+        self.titulo_formulario.pack(anchor="w", padx=18, pady=(16, 10))
 
-        formulario = ctk.CTkFrame(
-            contenido,
-            fg_color="transparent"
-        )
-        formulario.pack(fill="x")
+        formulario = ctk.CTkFrame(contenido, fg_color="transparent")
+        formulario.pack(fill="x", padx=10)
+        formulario.grid_columnconfigure((0, 1), weight=1)
 
-        formulario.grid_columnconfigure(0, weight=1)
-        formulario.grid_columnconfigure(1, weight=1)
+        def ubicar(widget, fila, columna):
+            widget.grid(row=fila, column=columna, sticky="ew", padx=8, pady=6)
 
-        # FILA 1
-        self.codigo = self.crear_campo(
-            formulario, "Código del producto", 0, 0
-        )
+        c, self.codigo = campo(formulario, "Código / código de barras", "Ej.: 7790895000997")
+        ubicar(c, 0, 0)
+        c, self.nombre = campo(formulario, "Nombre del producto", "Ej.: Gaseosa cola 1,5 L")
+        ubicar(c, 0, 1)
+        c, self.categoria = selector(formulario, "Categoría", ["Cargando categorías..."])
+        ubicar(c, 1, 0)
+        c, self.precio_compra = campo(formulario, "Precio de compra ($)", "0,00")
+        ubicar(c, 1, 1)
+        c, self.precio_venta = campo(formulario, "Precio de venta ($)", "0,00")
+        ubicar(c, 2, 0)
+        c, self.stock = campo(formulario, "Stock inicial", "0")
+        ubicar(c, 2, 1)
+        c, self.stock_minimo = campo(formulario, "Stock mínimo (alerta)", "5")
+        ubicar(c, 3, 0)
 
-        self.nombre = self.crear_campo(
-            formulario, "Nombre del producto", 0, 1
-        )
+        self.nota_stock = ctk.CTkLabel(
+            formulario, text="", font=(FUENTE, 11), text_color=GRIS, wraplength=300, justify="left")
+        self.nota_stock.grid(row=3, column=1, sticky="w", padx=8)
 
-        # FILA 2 - CATEGORÍA
-        contenedor_categoria = ctk.CTkFrame(
-            formulario,
-            fg_color="transparent"
-        )
-        contenedor_categoria.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=7
-        )
+        for entrada in (self.precio_compra, self.precio_venta):
+            entrada.bind("<KeyRelease>", lambda _e: self.calcular_margen())
 
+        escribir(self.stock, "0")
+        escribir(self.stock_minimo, "5")
+
+        botones = ctk.CTkFrame(contenido, fg_color="transparent")
+        botones.pack(fill="x", padx=18, pady=(18, 18))
+        self.boton_guardar = boton(botones, "Guardar producto", self.guardar_producto, "primario", ancho=180, alto=42)
+        self.boton_guardar.pack(side="left", padx=(0, 10))
+        boton(botones, "Limpiar", self.limpiar, "secundario", ancho=110, alto=42).pack(side="left", padx=(0, 10))
+        boton(botones, "Actualizar categorías", self.cargar_categorias, "oscuro", ancho=170, alto=42).pack(side="left")
+
+        # Panel informativo con el margen de ganancia
+        info = panel(tab, "Rentabilidad", "Se calcula con los precios ingresados.")
+        info.grid(row=0, column=1, sticky="nsew")
+        self.lbl_ganancia = ctk.CTkLabel(info, text=formato_dinero(0), font=(FUENTE, 26, "bold"),
+                                         text_color=VERDE_OSCURO)
+        self.lbl_ganancia.pack(anchor="w", padx=16, pady=(10, 0))
+        ctk.CTkLabel(info, text="Ganancia por unidad", font=(FUENTE, 12), text_color=GRIS).pack(anchor="w", padx=16)
+        self.lbl_margen = ctk.CTkLabel(info, text="0 %", font=(FUENTE, 26, "bold"), text_color=VERDE)
+        self.lbl_margen.pack(anchor="w", padx=16, pady=(16, 0))
+        ctk.CTkLabel(info, text="Margen sobre el precio de venta", font=(FUENTE, 12), text_color=GRIS).pack(
+            anchor="w", padx=16)
         ctk.CTkLabel(
-            contenedor_categoria,
-            text="Categoría",
-            font=("Arial", 12, "bold"),
-            text_color=VERDE_OSCURO
-        ).pack(anchor="w", pady=(0, 4))
+            info, text="Consejo: el stock mínimo genera la alerta de «stock bajo» en el Panel y en Inventario.",
+            font=(FUENTE, 11), text_color=GRIS, wraplength=230, justify="left", fg_color=VERDE_SUAVE,
+            corner_radius=10).pack(fill="x", padx=16, pady=(24, 16), ipady=8)
 
-        self.categoria = ctk.CTkComboBox(
-            contenedor_categoria,
-            values=["Cargando categorías..."],
-            state="readonly",
-            height=37
-        )
-        self.categoria.pack(fill="x")
-        self.categoria.set("Cargando categorías...")
+    def calcular_margen(self):
+        try:
+            compra = validaciones.decimal(self.precio_compra.get() or "0", "Precio de compra")
+            venta = validaciones.decimal(self.precio_venta.get() or "0", "Precio de venta")
+        except ErrorSistema:
+            self.lbl_ganancia.configure(text="—")
+            self.lbl_margen.configure(text="—")
+            return
+        ganancia = venta - compra
+        margen = (ganancia / venta * 100) if venta else 0
+        color = ROJO if ganancia < 0 else VERDE
+        self.lbl_ganancia.configure(text=formato_dinero(ganancia), text_color=color)
+        self.lbl_margen.configure(text=f"{margen:.1f} %", text_color=color)
 
-        self.precio_venta = self.crear_campo(
-            formulario, "Precio de venta ($)", 1, 1
-        )
-
-        # FILA 3
-        self.precio_compra = self.crear_campo(
-            formulario, "Precio de compra ($)", 2, 0
-        )
-
-        self.stock = self.crear_campo(
-            formulario, "Cantidad en stock", 2, 1
-        )
-
-        # FILA 4
-        self.stock_minimo = self.crear_campo(
-            formulario, "Stock mínimo", 3, 0
-        )
-
-        self.stock.insert(0, "0")
-        self.stock_minimo.insert(0, "5")
-
-        # BOTONES
-        botones = ctk.CTkFrame(
-            contenido,
-            fg_color="transparent"
-        )
-        botones.pack(
-            fill="x",
-            padx=8,
-            pady=(20, 8)
-        )
-
-        self.boton_guardar = ctk.CTkButton(
-            botones,
-            text="Guardar producto",
-            fg_color=VERDE,
-            hover_color=VERDE_OSCURO,
-            height=42,
-            width=180,
-            font=("Arial", 13, "bold"),
-            command=self.guardar_producto
-        )
-        self.boton_guardar.pack(
-            side="left",
-            padx=(0, 10)
-        )
-
-        ctk.CTkButton(
-            botones,
-            text="Limpiar",
-            fg_color=GRIS,
-            hover_color="#4B5B51",
-            height=42,
-            width=110,
-            command=self.limpiar
-        ).pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            botones,
-            text="Actualizar categorías",
-            fg_color=VERDE_OSCURO,
-            hover_color=VERDE,
-            height=42,
-            width=160,
-            command=self.cargar_categorias
-        ).pack(side="left")
-
-    # ----------------------------------------
+    # ==================================================================
     # LISTA DE PRODUCTOS
-    # ----------------------------------------
+    # ==================================================================
 
     def crear_listado(self):
         tab = self.pestanas.tab("Lista de productos")
 
-        barra = ctk.CTkFrame(
-            tab,
-            fg_color="transparent"
-        )
-        barra.pack(fill="x", padx=10, pady=10)
+        barra = ctk.CTkFrame(tab, fg_color="transparent")
+        barra.pack(fill="x", pady=(4, 8))
 
-        self.buscar = ctk.CTkEntry(
-            barra,
-            placeholder_text="Buscar por nombre o código...",
-            height=38
-        )
-        self.buscar.pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=(0, 10)
-        )
+        self.buscar = ctk.CTkEntry(barra, placeholder_text="Buscar por nombre o código...", height=38)
+        self.buscar.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.buscar.bind("<KeyRelease>", lambda _e: self.filtrar())
 
-        self.buscar.bind(
-            "<KeyRelease>",
-            lambda evento: self.filtrar()
-        )
+        self.filtro_categoria = ctk.CTkComboBox(
+            barra, values=[TODAS], state="readonly", width=190, height=38,
+            command=lambda _v: self.filtrar())
+        self.filtro_categoria.pack(side="left", padx=(0, 8))
+        elegir_opcion(self.filtro_categoria, TODAS)
 
-        ctk.CTkButton(
-            barra,
-            text="Actualizar lista",
-            width=120,
-            fg_color=VERDE,
-            hover_color=VERDE_OSCURO,
-            command=self.cargar_productos
-        ).pack(side="right")
+        self.filtro_estado = ctk.CTkSegmentedButton(
+            barra, values=ESTADOS, height=38, selected_color=VERDE, selected_hover_color=VERDE_OSCURO,
+            command=lambda _v: self.filtrar())
+        self.filtro_estado.set("Activos")
+        self.filtro_estado.pack(side="left", padx=(0, 8))
 
-        # ESTILO DE TABLA
-        estilo = ttk.Style()
-        estilo.configure(
-            "Productos.Treeview",
-            rowheight=31,
-            font=("Arial", 10)
-        )
-        estilo.configure(
-            "Productos.Treeview.Heading",
-            font=("Arial", 10, "bold")
-        )
+        boton(barra, "+ Nuevo producto", self.nuevo_producto, "primario", ancho=150).pack(side="right")
 
-        contenedor = ctk.CTkFrame(
-            tab,
-            fg_color=BLANCO
-        )
-        contenedor.pack(
-            fill="both",
-            expand=True,
-            padx=10,
-            pady=5
-        )
+        self.resumen = ctk.CTkLabel(tab, text="", font=(FUENTE, 12), text_color=GRIS, anchor="w")
+        self.resumen.pack(fill="x", pady=(0, 4))
 
-        columnas = (
-            "id",
-            "codigo",
-            "nombre",
-            "categoria",
-            "precio",
-            "stock"
-        )
+        self.tabla = Tabla(tab, [
+            ("codigo", "Código", 120, "w"),
+            ("nombre", "Producto", 230, "w"),
+            ("categoria", "Categoría", 130, "w"),
+            ("compra", "P. compra", 100, "e"),
+            ("venta", "P. venta", 100, "e"),
+            ("stock", "Stock", 65, "center"),
+            ("minimo", "Mínimo", 65, "center"),
+            ("estado", "Estado", 80, "center"),
+        ], altura=14, al_doble_click=self.editar_producto)
+        self.tabla.pack(fill="both", expand=True)
 
-        self.tabla = ttk.Treeview(
-            contenedor,
-            columns=columnas,
-            show="headings",
-            selectmode="browse",
-            style="Productos.Treeview"
-        )
+        acciones = ctk.CTkFrame(tab, fg_color="transparent")
+        acciones.pack(fill="x", pady=(8, 2))
+        boton(acciones, "Editar seleccionado", self.editar_producto, "primario", ancho=170).pack(side="left", padx=(0, 8))
+        self.boton_estado = boton(acciones, "Activar / desactivar", self.alternar_estado, "oscuro", ancho=170)
+        self.boton_estado.pack(side="left", padx=(0, 8))
+        boton(acciones, "Eliminar seleccionado", self.eliminar_producto, "peligro", ancho=170).pack(side="left")
+        boton(acciones, "↻ Actualizar lista", self.cargar_productos, "suave", ancho=150).pack(side="right")
 
-        encabezados = {
-            "id": "ID",
-            "codigo": "Código",
-            "nombre": "Producto",
-            "categoria": "Categoría",
-            "precio": "Precio venta",
-            "stock": "Stock"
-        }
-
-        for columna in columnas:
-            self.tabla.heading(
-                columna,
-                text=encabezados[columna]
-            )
-            self.tabla.column(
-                columna,
-                width=145 if columna == "nombre" else 100,
-                anchor="center"
-            )
-
-        self.tabla.column("id", width=50)
-
-        self.tabla.pack(
-            side="left",
-            fill="both",
-            expand=True
-        )
-
-        scroll = ttk.Scrollbar(
-            contenedor,
-            orient="vertical",
-            command=self.tabla.yview
-        )
-        scroll.pack(side="right", fill="y")
-
-        self.tabla.configure(
-            yscrollcommand=scroll.set
-        )
-
-        # DOBLE CLIC PARA EDITAR
-        self.tabla.bind(
-            "<Double-1>",
-            lambda evento: self.editar_producto()
-        )
-
-        acciones = ctk.CTkFrame(
-            tab,
-            fg_color="transparent"
-        )
-        acciones.pack(fill="x", padx=10, pady=10)
-
-        ctk.CTkButton(
-            acciones,
-            text="Editar seleccionado",
-            fg_color=VERDE,
-            hover_color=VERDE_OSCURO,
-            height=38,
-            command=self.editar_producto
-        ).pack(side="left", padx=(0, 10))
-
-        ctk.CTkButton(
-            acciones,
-            text="Eliminar seleccionado",
-            fg_color=ROJO,
-            hover_color="#991B1B",
-            height=38,
-            command=self.eliminar_producto
-        ).pack(side="left")
-
-    # ----------------------------------------
-    # CARGAR CATEGORÍAS DESDE SUPABASE
-    # ----------------------------------------
+    # ==================================================================
+    # CARGA DE DATOS DESDE SUPABASE
+    # ==================================================================
 
     def cargar_categorias(self):
-        try:
-            respuesta = (
-                supabase.table("categorias")
-                .select("id,nombre")
-                .order("nombre")
-                .execute()
-            )
-
-            self.categorias = {
-                fila["nombre"]: fila["id"]
-                for fila in (respuesta.data or [])
-            }
-
-            nombres = list(self.categorias.keys())
-
-            if nombres:
-                self.categoria.configure(
-                    state="normal",
-                    values=nombres
-                )
-                self.categoria.set(nombres[0])
-                self.categoria.configure(
-                    state="readonly"
-                )
-            else:
-                self.categoria.configure(
-                    state="normal",
-                    values=["Sin categorías"]
-                )
-                self.categoria.set("Sin categorías")
-                self.categoria.configure(
-                    state="readonly"
-                )
-
-        except Exception as error:
-            print("ERROR AL CARGAR CATEGORÍAS:", error)
-            self.categorias = {}
-
-            self.categoria.configure(
-                state="normal",
-                values=["Error al cargar"]
-            )
-            self.categoria.set("Error al cargar")
-            self.categoria.configure(
-                state="readonly"
-            )
-
-            messagebox.showerror(
-                "Error de categorías",
-                str(error)
-            )
-
-    # ----------------------------------------
-    # CARGAR PRODUCTOS
-    # ----------------------------------------
+        correcto, categorias = ejecutar_seguro(catalogo.listar_categorias,
+                                               titulo_error="Error al cargar categorías")
+        if not correcto:
+            categorias = []
+        self.categorias = {c["nombre"]: c["id"] for c in categorias}
+        nombres = list(self.categorias) or ["Sin categorías"]
+        cambiar_opciones(self.categoria, nombres, self.categoria.get())
+        cambiar_opciones(self.filtro_categoria, [TODAS] + list(self.categorias), self.filtro_categoria.get())
 
     def cargar_productos(self):
-        try:
-            respuesta = (
-                supabase.table("productos")
-                .select("*")
-                .order("id", desc=True)
-                .execute()
-            )
-
-            self.productos = respuesta.data or []
+        correcto, productos = ejecutar_seguro(catalogo.listar_productos,
+                                              titulo_error="Error al cargar productos")
+        if correcto:
+            self.productos = productos
             self.filtrar()
-
-        except Exception as error:
-            print("ERROR AL CARGAR PRODUCTOS:", error)
-            messagebox.showerror(
-                "Error al cargar productos",
-                str(error)
-            )
-
-    # ----------------------------------------
-    # BUSCAR PRODUCTOS
-    # ----------------------------------------
 
     def filtrar(self):
         texto = self.buscar.get().lower().strip()
+        categoria = self.filtro_categoria.get()
+        estado = self.filtro_estado.get()
 
-        for fila in self.tabla.get_children():
-            self.tabla.delete(fila)
-
-        categorias_por_id = {
-            identificador: nombre
-            for nombre, identificador in self.categorias.items()
-        }
-
+        filas = []
         for producto in self.productos:
-            codigo = str(producto.get("codigo") or "")
-            nombre = str(producto.get("nombre") or "")
-
-            if texto not in (codigo + " " + nombre).lower():
+            if texto and texto not in f"{producto['codigo']} {producto['nombre']}".lower():
                 continue
+            if categoria != TODAS and producto["categoria"] != categoria:
+                continue
+            activo = producto.get("activo", True)
+            if (estado == "Activos" and not activo) or (estado == "Inactivos" and activo):
+                continue
+            stock = int(producto.get("stock") or 0)
+            minimo = int(producto.get("stock_minimo") or 0)
+            etiquetas = ["inactivo"] if not activo else (["alerta"] if stock <= minimo else [])
+            filas.append((producto["id"], [
+                producto["codigo"], producto["nombre"], producto["categoria"],
+                formato_dinero(producto.get("precio_compra")), formato_dinero(producto.get("precio_venta")),
+                stock, minimo, "Activo" if activo else "Inactivo",
+            ], etiquetas))
 
-            precio = float(
-                producto.get("precio_venta") or 0
-            )
+        self.tabla.cargar(filas, "No se encontraron productos con esos filtros.")
+        bajos = sum(1 for p in self.productos if p.get("activo", True)
+                    and int(p.get("stock") or 0) <= int(p.get("stock_minimo") or 0))
+        self.resumen.configure(
+            text=f"Mostrando {len(filas)} de {len(self.productos)} productos · "
+                 f"{bajos} con stock bajo (en rojo)")
 
-            self.tabla.insert(
-                "",
-                "end",
-                values=(
-                    producto["id"],
-                    codigo,
-                    nombre,
-                    categorias_por_id.get(
-                        producto.get("categoria_id"),
-                        "Sin categoría"
-                    ),
-                    f"$ {precio:,.2f}",
-                    producto.get("stock", 0)
-                )
-            )
-
-    # ----------------------------------------
-    # GUARDAR O ACTUALIZAR PRODUCTO
-    # ----------------------------------------
+    # ==================================================================
+    # GUARDAR O ACTUALIZAR
+    # ==================================================================
 
     def guardar_producto(self):
+        es_nuevo = self.producto_id is None
         try:
-            codigo = self.codigo.get().strip()
-            nombre = self.nombre.get().strip()
-            categoria = self.categoria.get()
-
-            if not codigo or not nombre:
-                messagebox.showwarning(
-                    "Datos incompletos",
-                    "Ingresá el código y el nombre."
-                )
-                return
-
-            if categoria not in self.categorias:
-                messagebox.showwarning(
-                    "Categoría",
-                    "Seleccioná una categoría válida."
-                )
-                return
-
-            compra = float(
-                self.precio_compra.get().replace(",", ".")
+            datos = catalogo.validar_producto(
+                self.codigo.get(), self.nombre.get(), self.categorias.get(self.categoria.get()),
+                self.precio_compra.get() or "0", self.precio_venta.get(),
+                self.stock.get(), self.stock_minimo.get(), es_nuevo=es_nuevo,
             )
-            venta = float(
-                self.precio_venta.get().replace(",", ".")
-            )
-            stock = int(self.stock.get())
-            minimo = int(self.stock_minimo.get())
+        except ErrorSistema as error:
+            advertir(str(error), "Datos incorrectos")
+            return
 
-            if min(compra, venta, stock, minimo) < 0:
-                raise ValueError("Valores negativos")
+        if datos["precio_venta"] < datos["precio_compra"] and not confirmar(
+                "El precio de venta es menor al precio de compra (se vendería con pérdida).\n"
+                "¿Querés guardarlo igual?", "Precio por debajo del costo"):
+            return
 
-            datos = {
-                "codigo": codigo,
-                "nombre": nombre,
-                "categoria_id": self.categorias[categoria],
-                "precio_compra": compra,
-                "precio_venta": venta,
-                "stock": stock,
-                "stock_minimo": minimo
-            }
+        if es_nuevo:
+            correcto, _ = ejecutar_seguro(catalogo.crear_producto, datos, titulo_error="Error al guardar")
+            mensaje = "Producto registrado correctamente."
+        else:
+            correcto, _ = ejecutar_seguro(catalogo.actualizar_producto, self.producto_id, datos,
+                                          titulo_error="Error al guardar")
+            mensaje = "Producto actualizado correctamente."
 
-            if self.producto_id is None:
-                (
-                    supabase.table("productos")
-                    .insert(datos)
-                    .execute()
-                )
-                mensaje = "Producto registrado correctamente."
-            else:
-                (
-                    supabase.table("productos")
-                    .update(datos)
-                    .eq("id", self.producto_id)
-                    .execute()
-                )
-                mensaje = "Producto actualizado correctamente."
-
-            messagebox.showinfo("Éxito", mensaje)
-
+        if correcto:
+            informar(mensaje)
             self.limpiar()
             self.cargar_productos()
             self.pestanas.set("Lista de productos")
 
-        except ValueError:
-            messagebox.showerror(
-                "Datos incorrectos",
-                "Revisá precios y cantidades. Usá números válidos."
-            )
-
-        except Exception as error:
-            print("ERROR AL GUARDAR:", error)
-            messagebox.showerror(
-                "Error al guardar",
-                str(error)
-            )
-
-    # ----------------------------------------
-    # PRODUCTO SELECCIONADO
-    # ----------------------------------------
+    # ==================================================================
+    # SELECCIÓN, EDICIÓN Y ELIMINACIÓN
+    # ==================================================================
 
     def producto_seleccionado(self):
-        seleccion = self.tabla.selection()
-
+        seleccion = self.tabla.seleccionado()
         if not seleccion:
-            messagebox.showwarning(
-                "Seleccionar producto",
-                "Primero seleccioná un producto de la lista."
-            )
+            advertir("Primero seleccioná un producto de la lista.", "Seleccionar producto")
             return None
+        return next((p for p in self.productos if str(p["id"]) == seleccion), None)
 
-        producto_id = int(
-            self.tabla.item(
-                seleccion[0], "values"
-            )[0]
-        )
-
-        return next(
-            (
-                producto
-                for producto in self.productos
-                if producto["id"] == producto_id
-            ),
-            None
-        )
-
-    # ----------------------------------------
-    # EDITAR PRODUCTO
-    # ----------------------------------------
+    def nuevo_producto(self):
+        self.limpiar()
+        self.pestanas.set("Registrar producto")
+        self.codigo.focus_set()
 
     def editar_producto(self):
         producto = self.producto_seleccionado()
-
         if not producto:
             return
 
         self.limpiar()
         self.producto_id = producto["id"]
 
-        campos = [
-            (self.codigo, producto.get("codigo") or ""),
-            (self.nombre, producto.get("nombre") or ""),
-            (self.precio_compra, producto.get("precio_compra") or 0),
-            (self.precio_venta, producto.get("precio_venta") or 0),
-            (self.stock, producto.get("stock") or 0),
-            (self.stock_minimo, producto.get("stock_minimo") or 0)
-        ]
+        escribir(self.codigo, producto.get("codigo"))
+        escribir(self.nombre, producto.get("nombre"))
+        escribir(self.precio_compra, numero_editable(producto.get("precio_compra")))
+        escribir(self.precio_venta, numero_editable(producto.get("precio_venta")))
+        escribir(self.stock_minimo, producto.get("stock_minimo") or 0)
+        escribir(self.stock, producto.get("stock") or 0)
+        self.stock.configure(state="disabled", fg_color=FONDO)
+        self.nota_stock.configure(text="El stock se modifica desde Inventario (entradas, salidas y ajustes) "
+                                       "para que quede registrado en el historial.")
 
-        for entrada, valor in campos:
-            entrada.delete(0, "end")
-            entrada.insert(0, str(valor))
+        if producto["categoria"] in self.categorias:
+            elegir_opcion(self.categoria, producto["categoria"])
 
-        for nombre, identificador in self.categorias.items():
-            if identificador == producto.get("categoria_id"):
-                self.categoria.configure(state="normal")
-                self.categoria.set(nombre)
-                self.categoria.configure(state="readonly")
-                break
-
-        self.titulo_formulario.configure(
-            text="Editar producto"
-        )
-        self.boton_guardar.configure(
-            text="Guardar cambios"
-        )
-
+        self.titulo_formulario.configure(text=f"Editar producto: {producto['nombre']}")
+        self.boton_guardar.configure(text="Guardar cambios")
+        self.calcular_margen()
         self.pestanas.set("Registrar producto")
 
-    # ----------------------------------------
-    # ELIMINAR PRODUCTO
-    # ----------------------------------------
+    def alternar_estado(self):
+        producto = self.producto_seleccionado()
+        if not producto:
+            return
+        activo = producto.get("activo", True)
+        accion = "desactivar" if activo else "activar"
+        detalle = ("Dejará de aparecer en Ventas, pero se conserva su historial."
+                   if activo else "Volverá a estar disponible para la venta.")
+        if not confirmar(f"¿Querés {accion} «{producto['nombre']}»?\n{detalle}"):
+            return
+        correcto, _ = ejecutar_seguro(catalogo.cambiar_estado_producto, producto["id"], not activo)
+        if correcto:
+            self.cargar_productos()
 
     def eliminar_producto(self):
         producto = self.producto_seleccionado()
-
         if not producto:
             return
 
-        confirmar = messagebox.askyesno(
-            "Eliminar producto",
-            f"¿Querés eliminar '{producto['nombre']}'?"
-        )
-
-        if not confirmar:
+        correcto, tiene_movimientos = ejecutar_seguro(catalogo.movimientos_asociados, producto["id"])
+        if not correcto:
             return
 
-        try:
-            (
-                supabase.table("productos")
-                .delete()
-                .eq("id", producto["id"])
-                .execute()
-            )
+        if tiene_movimientos:
+            if producto.get("activo", True) and confirmar(
+                    f"«{producto['nombre']}» tiene ventas, compras o movimientos de stock registrados "
+                    "y no puede eliminarse sin perder el historial.\n\n"
+                    "¿Querés desactivarlo para que no aparezca más en Ventas?", "No se puede eliminar"):
+                if ejecutar_seguro(catalogo.cambiar_estado_producto, producto["id"], False)[0]:
+                    informar("Producto desactivado.")
+                    self.cargar_productos()
+            elif not producto.get("activo", True):
+                advertir("El producto tiene historial y no puede eliminarse. Ya se encuentra desactivado.")
+            return
 
+        if not confirmar(f"¿Querés eliminar definitivamente «{producto['nombre']}»?\n"
+                         "Esta acción no se puede deshacer.", "Eliminar producto"):
+            return
+
+        correcto, _ = ejecutar_seguro(catalogo.eliminar_producto, producto["id"],
+                                      titulo_error="Error al eliminar")
+        if correcto:
             self.cargar_productos()
+            informar("Producto eliminado correctamente.")
 
-            messagebox.showinfo(
-                "Éxito",
-                "Producto eliminado correctamente."
-            )
-
-        except Exception as error:
-            print("ERROR AL ELIMINAR:", error)
-            messagebox.showerror(
-                "Error al eliminar",
-                str(error)
-            )
-
-    # ----------------------------------------
+    # ==================================================================
     # LIMPIAR FORMULARIO
-    # ----------------------------------------
+    # ==================================================================
 
     def limpiar(self):
         self.producto_id = None
-
-        for entrada in (
-            self.codigo,
-            self.nombre,
-            self.precio_compra,
-            self.precio_venta,
-            self.stock,
-            self.stock_minimo
-        ):
-            entrada.delete(0, "end")
-
-        self.stock.insert(0, "0")
-        self.stock_minimo.insert(0, "5")
-
+        self.stock.configure(state="normal", fg_color=BLANCO)
+        for entrada in (self.codigo, self.nombre, self.precio_compra, self.precio_venta,
+                        self.stock, self.stock_minimo):
+            escribir(entrada, "")
+        escribir(self.stock, "0")
+        escribir(self.stock_minimo, "5")
+        self.nota_stock.configure(text="El stock inicial queda registrado en el historial de Inventario.")
         if self.categorias:
-            primer_nombre = next(iter(self.categorias))
-            self.categoria.configure(state="normal")
-            self.categoria.set(primer_nombre)
-            self.categoria.configure(state="readonly")
-
-        self.titulo_formulario.configure(
-            text="Registrar nuevo producto"
-        )
-        self.boton_guardar.configure(
-            text="Guardar producto"
-        )
+            elegir_opcion(self.categoria, next(iter(self.categorias)))
+        self.titulo_formulario.configure(text="Registrar nuevo producto")
+        self.boton_guardar.configure(text="Guardar producto")
+        self.calcular_margen()
